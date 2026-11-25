@@ -1,1 +1,162 @@
+// Prisma schema for the Metro Instrumentation Monitoring System
+// Learn more: https://pris.ly/d/prisma-schema
 
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Auth & Users ────────────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  VIEWER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  displayName  String
+  role         UserRole @default(VIEWER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastLoginAt  DateTime?
+
+  // Relations
+  stationAccess UserStationAccess[]
+  activityLogs  ActivityLog[]
+  dataSources   DataSource[]        @relation("UploadedBy")
+  inclinometerImages InclinometerImage[] @relation("UploadedBy")
+}
+
+model Station {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique // e.g. "A3", "N3", "Link"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  userAccess        UserStationAccess[]
+  dataSources       DataSource[]
+  inclinometerImages InclinometerImage[]
+}
+
+model UserStationAccess {
+  id        String   @id @default(cuid())
+  userId    String
+  stationId String
+  createdAt DateTime @default(now())
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  station Station @relation(fields: [stationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, stationId])
+  @@index([userId])
+  @@index([stationId])
+}
+
+// ─── Activity Logging ────────────────────────────────────────────────
+
+model ActivityLog {
+  id           String   @id @default(cuid())
+  userId       String?
+  username     String   // snapshot of username at time of action
+  action       String   // e.g. "LOGIN", "VIEW_STATION", "UPLOAD_DATA_SOURCE", "EDIT_USER"
+  resourceType String?  // e.g. "station", "dataSource", "user"
+  resourceId   String?
+  details      String?  // JSON string with extra context
+  ip           String?
+  userAgent    String?
+  timestamp    DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([timestamp])
+}
+
+// ─── Data Sources (uploaded Excel files + per-sheet configuration) ────
+
+enum InstrumentType {
+  EXTENSOMETER
+  CRACKMETER
+  TILTMETER
+  OBSERVATION_WELL
+  INCLINOMETER
+  OTHER
+}
+
+enum DataSourceStatus {
+  PENDING       // uploaded but not yet configured
+  CONFIGURED    // sheets mapped to instruments
+  ACTIVE        // in use by dashboard
+  ARCHIVED
+}
+
+model DataSource {
+  id           String           @id @default(cuid())
+  stationId    String
+  fileName     String           // original filename
+  filePath     String           // path under /upload
+  fileSize     Int
+  uploadedById String
+  uploadedAt   DateTime         @default(now())
+  status       DataSourceStatus @default(PENDING)
+  analyzedAt   DateTime?
+
+  station    Station    @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  uploadedBy User       @relation("UploadedBy", fields: [uploadedById], references: [id])
+  sheets     SheetConfig[]
+
+  @@index([stationId])
+  @@index([status])
+}
+
+model SheetConfig {
+  id             String   @id @default(cuid())
+  dataSourceId   String
+  sheetName      String
+  enabled        Boolean  @default(false)
+  instrumentType InstrumentType @default(OTHER)
+  instrumentCode String?  // e.g. "EX-1", "TM-01", or Persian building name
+  instrumentLabel String? // display label
+  headerRow      Int      @default(0) // 0-indexed
+  dateCol        Int      @default(1) // 0-indexed column index for date
+  valueCols      String   // JSON array of {col, label, color}
+  dateRangeStart String?  // ISO date string, nullable = no filter
+  dateRangeEnd   String?  // ISO date string, nullable = no filter
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  dataSource DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+
+  @@index([dataSourceId])
+  @@unique([dataSourceId, sheetName])
+}
+
+// ─── Inclinometer Images (one image per instrument) ──────────────────
+
+model InclinometerImage {
+  id             String   @id @default(cuid())
+  stationId      String
+  instrumentCode String   // e.g. "INC-01"
+  instrumentLabel String?
+  fileName       String
+  filePath       String   // path under /public or /uploads
+  uploadedById   String
+  uploadedAt     DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  station    Station @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  uploadedBy User    @relation("UploadedBy", fields: [uploadedById], references: [id])
+
+  @@unique([stationId, instrumentCode])
+  @@index([stationId])
+}
